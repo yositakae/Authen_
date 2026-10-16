@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import FoodForm from './FoodForm'
+import AuthModal from './AuthModal'
 import './Menu.css'
 
-const API_URL = 'http://localhost:5000/api'
+const API_URL = `${import.meta.env.VITE_API_URL || 'http://localhost:5002'}/api`
 const foodDetails = {
   'ข้าวกะเพราไก่ไข่ดาว': ['🍳', 'กะเพราไก่ผัดหอม เสิร์ฟพร้อมไข่ดาวกรอบ'],
   'ข้าวผัดกุ้ง': ['🍤', 'ข้าวผัดกระทะร้อนกับกุ้งเนื้อแน่น'],
@@ -24,13 +25,38 @@ function App() {
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [mode, setMode] = useState(() => localStorage.getItem('mode') || 'USER')
+  const [user, setUser] = useState(() => { try { return JSON.parse(localStorage.getItem('user')) } catch { return null } })
+  const [authMode, setAuthMode] = useState('')
+  const [users, setUsers] = useState([])
   const [saving, setSaving] = useState(false)
 
-  const changeMode = () => {
-    const nextMode = mode === 'USER' ? 'ADMIN' : 'USER'
-    setMode(nextMode)
-    localStorage.setItem('mode', nextMode)
+  const mode = user?.role === 'ADMIN' ? 'ADMIN' : 'USER'
+  const authenticate = (nextUser) => { setUser(nextUser); localStorage.setItem('user', JSON.stringify(nextUser)); setAuthMode('') }
+  const logout = () => { setUser(null); localStorage.removeItem('user') }
+
+  useEffect(() => {
+    if (mode !== 'ADMIN') return
+    fetch(`${API_URL}/users`).then((response) => response.ok ? response.json() : []).then(setUsers).catch(() => setUsers([]))
+  }, [mode])
+
+  const updateRole = async (userId, role) => {
+    try {
+      const response = await fetch(`${API_URL}/users/${userId}/role`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role }) })
+      if (!response.ok) throw new Error('เปลี่ยนสิทธิ์ผู้ใช้ไม่สำเร็จ')
+      const updatedUser = await response.json()
+      setUsers((current) => current.map((item) => item.userId === userId ? updatedUser : item))
+      if (user?.userId === userId) authenticate(updatedUser)
+    } catch (roleError) { setError(roleError.message) }
+  }
+
+  const rateMenu = async (menuId, score) => {
+    if (!user) { setAuthMode('login'); return }
+    try {
+      const response = await fetch(`${API_URL}/menus/${menuId}/ratings`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: user.userId, score: Number(score) }) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'บันทึกคะแนนไม่สำเร็จ')
+      setMenus((current) => current.map((menu) => menu.menuId === menuId ? { ...menu, rating: result } : menu))
+    } catch (ratingError) { setError(ratingError.message) }
   }
 
   const addMenu = async (values) => {
@@ -101,9 +127,8 @@ function App() {
         </a>
         <div className="topbar-actions">
           <span className="open-status"><i /> เปิดให้บริการทุกวัน</span>
-          <button className="mode-toggle" type="button" onClick={changeMode} aria-pressed={mode === 'ADMIN'}>
-            {mode === 'USER' ? 'เข้าสู่โหมดผู้ดูแล' : 'กลับไปหน้าลูกค้า'}
-          </button>
+          {user ? <span className="signed-in-name">{user.name}</span> : null}
+          {user ? <button className="mode-toggle" type="button" onClick={logout}>ออกจากระบบ</button> : <><button className="mode-toggle" type="button" onClick={() => setAuthMode('login')}>เข้าสู่ระบบ</button><button className="mode-toggle register-toggle" type="button" onClick={() => setAuthMode('register')}>สมัครสมาชิก</button></>}
         </div>
       </header>
 
@@ -143,7 +168,7 @@ function App() {
           ))}
         </div>
 
-        {mode === 'ADMIN' ? <FoodForm types={types} onSubmit={addMenu} saving={saving} /> : null}
+        {mode === 'ADMIN' ? <><FoodForm types={types} onSubmit={addMenu} saving={saving} /><section className="users-panel"><div><p className="eyebrow">จัดการบัญชี</p><h3>ผู้ใช้งาน</h3></div>{users.length ? <ul>{users.map((item) => <li key={item.userId}><span>{item.name} <small>{item.email}</small></span><select value={item.role} onChange={(event) => updateRole(item.userId, event.target.value)} aria-label={`สิทธิ์ของ ${item.name}`}><option value="USER">ผู้ใช้</option><option value="ADMIN">ผู้ดูแล</option></select></li>)}</ul> : <p className="users-empty">ยังไม่มีบัญชีผู้ใช้อื่น</p>}</section></> : null}
 
         {loading ? <p className="state-message">กำลังโหลดเมนูอร่อย ๆ ...</p> : null}
         {error ? <p className="state-message error">{error} กรุณาตรวจสอบว่า backend เปิดอยู่</p> : null}
@@ -160,6 +185,7 @@ function App() {
                   <h3>{menu.name}</h3>
                   <p>{description}</p>
                   <div className="dish-footer"><strong>฿{Number(menu.price).toLocaleString('th-TH')}</strong>{mode === 'ADMIN' ? <button className="delete-menu" type="button" onClick={() => deleteMenu(menu.menuId)}>ลบเมนู</button> : <span>พร้อมเสิร์ฟ</span>}</div>
+                  <div className="rating-row"><span aria-label={`คะแนนเฉลี่ย ${Number(menu.rating?.average || 0).toFixed(1)} จาก 5`}>★ {Number(menu.rating?.average || 0).toFixed(1)} <small>({menu.rating?.count || 0} รีวิว)</small></span>{mode !== 'ADMIN' ? <label>ให้คะแนน<select value="" onChange={(event) => rateMenu(menu.menuId, event.target.value)} aria-label={`ให้คะแนน ${menu.name}`}><option value="" disabled>{user ? 'เลือกคะแนน' : 'เข้าสู่ระบบ'}</option>{[5, 4, 3, 2, 1].map((score) => <option key={score} value={score}>{score} ดาว</option>)}</select></label> : null}</div>
                 </div>
               </article>
             )
@@ -169,6 +195,7 @@ function App() {
       </section>
 
       <footer className="footer"><span className="brand-mark">คร</span><span>ครัวละมุน</span><span className="footer-note">อิ่มท้อง อิ่มใจ ในทุกวัน</span></footer>
+      {authMode ? <AuthModal initialMode={authMode} onClose={() => setAuthMode('')} onAuthenticated={authenticate} /> : null}
     </main>
   )
 }
